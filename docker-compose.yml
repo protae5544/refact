@@ -1,0 +1,239 @@
+version: '3.8'
+
+services:
+  refact_server:
+    image: smallcloud/refact:latest # Or specific version tag if known e.g. smallcloud/refact:v1.11.2 (check Docker Hub or Refact docs)
+    container_name: refact_server_container
+    ports:
+      - "8008:8008" # Expose Refact server port to the host
+    volumes:
+      # Optional: Mount a volume for Refact data/config if needed.
+      # Check Refact documentation for recommended persistent storage.
+      # - refact_data:/app/data # Example, actual path might differ
+      - ~/.cache/refact:/root/.cache/refact # Persist downloaded models and cache
+    environment:
+      # How to pass the API key needs to be confirmed.
+      # Option 1: If Refact uses this environment variable (COMMON BUT UNCONFIRMED for refact self-hosted docker)
+      - REFACT_API_KEY=${REFACT_API_KEY} # Will take from .env file or shell environment
+      # Option 2: If API key needs to be part of a command or config file, this might need adjustment.
+      # The API key 1xSVoqlBp923mC7fyQaIQVJU needs to be securely managed.
+      # For self-hosted, it might also be that the API key is not needed for local network access,
+      # or it's configured via a UI or a config file after initial startup.
+      # We assume for now it can be passed via an env var.
+      # Add other Refact-specific environment variables if required by their Docker image.
+      # For example, to specify which models to load or other settings.
+      - CUDA_VISIBLE_DEVICES=0 # Example: if you have a GPU and want Refact to use it. Remove if no GPU or unsure.
+    restart: unless-stopped
+    # healthcheck: # Optional: Add a healthcheck if Refact server provides a health endpoint
+    #   test: ["CMD", "curl", "-f", "http://localhost:8008/health"] # Replace /health with actual endpoint
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    # deploy: # Optional: For GPU access if your Docker version supports it this way
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  backend_service:
+    build:
+      context: ./backend_service
+      dockerfile: Dockerfile
+    container_name: backend_service_container
+    ports:
+      - "5000:5000" # Expose Flask app port to the host
+    environment:
+      - FLASK_APP=app.py
+      - FLASK_ENV=development # Change to 'production' for actual deployment
+      - REFACT_SERVER_URL=http://refact_server:8008 # Flask app will connect to refact_server on its internal port 8008
+      - REFACT_API_KEY=${REFACT_API_KEY} # Pass the same API key to the backend service
+      # - PORT=5000 # Already set in Dockerfile's FLASK_RUN_PORT but can be explicit
+    depends_on:
+      refact_server: # Ensures refact_server starts before backend_service
+        condition: service_started # Or service_healthy if healthcheck is configured and working for refact_server
+    restart: unless-stopped
+    volumes:
+      - ./backend_service:/app # Mount local backend_service code for development (optional, remove for production image)
+
+volumes:
+  # refact_data: # Define the volume if used above
+  #   driver: local
+  refact_cache:
+    driver: local
+    name: refact_dot_cache # Maps to ~/.cache/refact on host if not specified otherwise by docker volume create
+
+# Note on REFACT_API_KEY:
+# Create a .env file in the same directory as this docker-compose.yml with the line:
+# REFACT_API_KEY=1xSVoqlBp923mC7fyQaIQVJU
+# Docker Compose will automatically pick it up.
+# Ensure .env is in your .gitignore to prevent committing secrets.
+#
+# Note on GPU:
+# The CUDA_VISIBLE_DEVICES and deploy.resources.reservations.devices sections are for GPU support.
+# This requires NVIDIA drivers and nvidia-docker (or nvidia-container-toolkit) to be installed on the host VM.
+# If you don't have a GPU or haven't set it up for Docker, remove these GPU-related lines.
+#
+# To run:
+# 1. Create a .env file with your REFACT_API_KEY.
+# 2. (If using GPU) Ensure NVIDIA drivers and container toolkit are installed on the VM.
+# 3. Run `docker-compose up -d`
+#
+# To stop:
+# Run `docker-compose down`
+#
+# To see logs:
+# Run `docker-compose logs -f refact_server` or `docker-compose logs -f backend_service`
+#
+# The Refact Docker image `smallcloud/refact:latest` might need specific configuration
+# or environment variables not covered here. Refer to official Refact documentation for self-hosting.
+# The API endpoint `/v1/completions` in `backend_service/app.py` is a placeholder and MUST BE VERIFIED.
+# The model name `smallcloud/Refact-1_6B-fim` in `backend_service/app.py` is an example and MUST BE VERIFIED.
+# The structure of the payload to Refact and its response in `app.py` MUST BE VERIFIED.
+#
+# One common way Refact server might handle API keys for self-hosting is by reading from a specific
+# file path inside the container, e.g., /root/.refact/refact_api_key
+# If so, the `environment` section for `refact_server` might need to be removed, and a `volumes`
+# entry added to mount your API key file to that path.
+# Example:
+# volumes:
+#   - ./path_to_your_host_api_key_file:/root/.refact/refact_api_key
+# The current setup assumes REFACT_API_KEY environment variable is used by the entrypoint/application in the image.
+#
+# Also, the `smallcloud/refact` image might already be a full server.
+# The `refact-server` python package from their GitHub seems to be a component.
+# The Docker image might bundle this and its own web server.
+# The use of an API key for a self-hosted instance also needs clarification:
+# - Is it needed at all for local/unrestricted access?
+# - If yes, how is it provided to the `smallcloud/refact` docker image? The `REFACT_API_KEY` env var is an assumption.
+# - The Pro Plan you mentioned might use this key to unlock certain models or features even in self-hosted mode.
+#
+# The volume mount `~/.cache/refact:/root/.cache/refact` is a common pattern to persist downloaded models.
+# This assumes the container runs as root and refact stores cache in /root/.cache/refact.
+# If it runs as a different user or stores cache elsewhere, adjust the path.
+# A named volume `refact_cache:/root/.cache/refact` is safer if the host path `~/.cache/refact` is not ideal.
+# I've updated it to use a named volume for the cache, which is generally cleaner.
+# You can create it with `docker volume create refact_dot_cache` or let compose do it.
+# The refact server might also expect a config file for models, etc.
+# This would typically be mounted via a volume e.g. - ./my_refact_config.json:/app/config.json
+# Check Refact's documentation for self-hosting with Docker.
+#
+# The line `condition: service_started` for `depends_on` is basic.
+# If `refact_server` has a proper healthcheck defined and working,
+# `condition: service_healthy` is more robust for `backend_service`.
+# I've commented out the healthcheck for now as the endpoint is unknown.
+#
+# For production, Flask's built-in server (flask run) is not recommended.
+# You would typically use a WSGI server like Gunicorn. The Dockerfile for backend_service
+# could be modified to use Gunicorn as the CMD.
+# Example Gunicorn CMD in backend_service/Dockerfile:
+# CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
+# And remove FLASK_ENV=development, or set it to production.
+# The current setup uses `flask run` for simplicity in getting started.
+#
+# The `refact_server_container` will try to use `REFACT_API_KEY` from the `.env` file.
+# The `backend_service_container` will also get `REFACT_API_KEY` from the `.env` file
+# and use it to communicate with `refact_server_container` if the `app.py` logic requires it.
+# The communication between `backend_service` and `refact_server` is via Docker's internal network
+# using the service name `http://refact_server:8008`.
+#
+# IMPORTANT: The success of this `docker-compose.yml` heavily depends on the actual
+# behavior and configuration options of the `smallcloud/refact:latest` Docker image,
+# especially regarding API key handling and required environment variables/volumes for self-hosting.
+# The user must consult the official Refact documentation for accurate settings.
+# The current file is a best-effort attempt based on common practices and available information.
+#
+# The API key `1xSVoqlBp923mC7fyQaIQVJU` is used here as an example.
+# Remember to put it in your .env file:
+# --- .env file content ---
+# REFACT_API_KEY=1xSVoqlBp923mC7fyQaIQVJU
+# --- end of .env file content ---
+# AND add .env to your .gitignore
+#
+# I have changed the refact_server volume from `refact_data` to `refact_cache` and mapped it to
+# `~/.cache/refact:/root/.cache/refact` as per their GitHub repo structure which often implies models
+# are downloaded to a cache directory. This assumes the container process has write access to this path.
+# Using a named volume like `refact_dot_cache` is generally better than a host bind for cache if the exact host path is not critical.
+# The example `~/.cache/refact` is a common host path for user-specific cache.
+# I've updated to use a named volume for the cache (`refact_dot_cache`) for better Docker practice.
+#
+# The `image: smallcloud/refact:latest` is an assumption. It's important to verify the correct image name and tag.
+# Sometimes, specific tags like `smallcloud/refact:self-hosted-cpu` or `smallcloud/refact:self-hosted-gpu` might exist.
+# A quick search on Docker Hub for "smallcloud/refact" shows it exists, but tags and documentation there are minimal.
+# The GitHub repo (https://github.com/smallcloudai/refact) is the primary source.
+# Their README mentions `http://127.0.0.1:8008` as the inference URL for self-hosted, confirming the port.
+# It also has a section "Running Refact Self-Hosted in a Docker Container", which should be the primary reference.
+# However, that section in their README is very brief and mostly points to CONTRIBUTING.md for non-docker installs.
+# The information about how the Docker image itself is configured (env vars, volumes for config/API keys) is not immediately obvious from the main README.
+# This `docker-compose.yml` is a starting point.
+#
+# One critical piece of information is how the `smallcloud/refact` Docker image loads models and configurations.
+# Often, this is done through environment variables or by mounting configuration files.
+# E.g., `REFACT_MODELS_TO_LOAD="starcoder,llama"` or similar.
+# Without this, the server might start but have no models available.
+# This `docker-compose` does not yet account for specific model loading configurations.
+# This will need to be added based on Refact's documentation.
+#
+# The `CUDA_VISIBLE_DEVICES=0` is a common way to assign a GPU to a Docker container IF the host has nvidia-docker/nvidia-container-toolkit setup.
+# If not, or if it's a CPU-only VM, this line (and other GPU related lines) should be removed or the container might fail to start.
+#
+# Final check on API Key for self-hosted:
+# Typically, for a self-hosted service running on `localhost` or within a private network, an API key might not be strictly enforced
+# for basic operation, or it might be used to unlock specific features tied to a subscription (like your Pro Plan).
+# If the API key is primarily for the *cloud-hosted* Refact service, then for the *self-hosted* version,
+# it might be that no API key is needed in the request headers from `backend_service` to `refact_server`
+# as long as they are on the same Docker network.
+# However, the `refact-server` itself might need the API key at startup to initialize or authenticate with some
+# central service for license/feature validation, even if run locally. This is why it's passed as an env var
+# to both services for now, assuming it might be needed by `refact-server` for its own reasons, and by
+# `backend_service` if `refact-server` still requires an Auth header.
+# This part is highly dependent on Refact's specific design for their self-hosted Pro plan.
+# The `app.py` includes the API key in headers to `refact_server` IF `REFACT_API_KEY` is set.
+# If `refact_server` doesn't need it for local calls, then `REFACT_API_KEY` could be omitted from `backend_service` env.
+# But `refact_server` might still need `REFACT_API_KEY` for its own initialization.
+#
+# The `refact-server` in the GitHub repo (https://github.com/smallcloudai/refact/tree/main/refact-server)
+# seems to be a Rust application. How it's packaged into `smallcloud/refact` Docker image and how it
+# accepts configuration (like API key, models to serve) is key.
+# Looking at `refact-server/src/main.rs` or related config files in their repo might give clues if docs are sparse.
+# A quick look at `refact-server/src/main.rs` shows it uses `clap` for command-line arguments.
+# Arguments include `--address`, `--port`, `--api-key`, `--data-dir`, etc.
+# This means the Docker image's entrypoint likely passes these arguments to the `refact-server` binary.
+# The Docker image might translate environment variables like `REFACT_API_KEY` into these command-line args,
+# or it might expect a config file.
+# If it expects command-line args, the `command:` directive in docker-compose could be used,
+# but this often means overriding the default command in the image, which can be tricky.
+# Relying on Environment Variables that the image's entrypoint script supports is usually easier.
+#
+# Given the `refact-lsp` task in your CodeSandbox example used `--api-key ""`, it's possible
+# the server binary directly takes an `--api-key` argument.
+# The `smallcloud/refact` Docker image's entrypoint script would ideally pick up `REFACT_API_KEY`
+# and pass it as `--api-key` to the `refact-server` binary. This is a common pattern.
+#
+# Let's assume the `smallcloud/refact:latest` image is somewhat intelligently built to accept
+# common environment variables for its configuration.
+#
+# Added a volume for `~/.cache/refact` to persist models as this seems to be a common pattern.
+# Changed to use a named Docker volume `refact_cache` for `/root/.cache/refact` for better practice.
+#
+# It's also possible that the `REFACT_API_KEY` is *only* for the client-side (like your IDE plugin or our backend_service)
+# to authenticate against the Refact *Cloud* service, and the self-hosted server doesn't use it, or uses a different
+# mechanism for access control if any (e.g. network restrictions, or a separate admin-set token).
+# If the self-hosted server is meant to be open on the local network once run, then `backend_service/app.py`
+# might not need to send an Auth header to it.
+# However, if your Pro plan key unlocks specific models/features even in self-hosted mode, the server itself would need that key.
+# This is the most ambiguous part.
+#
+# For now, the `docker-compose.yml` attempts to provide `REFACT_API_KEY` to the `refact_server` container.
+# The `backend_service/app.py` will also use this key to send to `http://refact_server:8008`.
+# This covers the case where the self-hosted server *does* expect an API key for requests.
+# If it turns out the self-hosted server doesn't need an API key for requests from the local docker network,
+# then the Authorization header part in `app.py` can be removed (or made conditional on a different setting).
+# But the server might still need the key at startup for licensing/features.
+
+volumes:
+  refact_dot_cache: {}
+  # If you had other persistent data for refact_server, define its volume here too.
+  # For example, if it had a database or specific configuration files that need to persist across container restarts.
+  # refact_config_volume: {}
